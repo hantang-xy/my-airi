@@ -56,6 +56,9 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const pendingQueuedSends = ref<QueuedSend[]>([])
   const hooks = createChatHooks()
 
+  // 消息累积器：在 LLM 生成时累积用户的新消息
+  const accumulatedMessages = ref<Map<string, string[]>>(new Map())
+
   const sendQueue = createQueue<QueuedSend>({
     handlers: [
       async ({ data }) => {
@@ -339,6 +342,29 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     }
     finally {
       sending.value = false
+
+      // 检查是否有累积的消息
+      const accumulated = accumulatedMessages.value.get(sessionId)
+      if (accumulated && accumulated.length > 0) {
+        console.info('[ChatOrchestrator] Processing accumulated messages:', {
+          sessionId,
+          count: accumulated.length,
+        })
+
+        // 合并所有累积的消息
+        const mergedMessage = accumulated.join('\n\n')
+
+        // 清空累积器
+        accumulatedMessages.value.delete(sessionId)
+
+        // 重新调用 ingest（此时 sending = false，会正常入队）
+        // 使用 setTimeout 确保当前 finally 块完全执行完
+        setTimeout(() => {
+          ingest(mergedMessage, options, sessionId).catch((err) => {
+            console.error('[ChatOrchestrator] Failed to send accumulated messages:', err)
+          })
+        }, 0)
+      }
     }
   }
 
@@ -349,6 +375,22 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   ) {
     const sessionId = targetSessionId || activeSessionId.value
     const generation = chatSession.getSessionGeneration(sessionId)
+
+    // 如果当前正在发送，累积消息而不是入队
+    if (sending.value) {
+      const accumulated = accumulatedMessages.value.get(sessionId) || []
+      accumulated.push(sendingMessage)
+      accumulatedMessages.value.set(sessionId, accumulated)
+
+      console.info('[ChatOrchestrator] Message accumulated while sending:', {
+        sessionId,
+        accumulatedCount: accumulated.length,
+        message: `${sendingMessage.substring(0, 50)}...`,
+      })
+
+      // 返回立即 resolve 的 Promise（不阻塞用户）
+      return Promise.resolve()
+    }
 
     return new Promise<void>((resolve, reject) => {
       sendQueue.enqueue({
@@ -373,6 +415,14 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     pendingQueuedSends.value = sessionId
       ? pendingQueuedSends.value.filter(item => item.sessionId !== sessionId)
       : []
+
+    // 清除累积的消息
+    if (sessionId) {
+      accumulatedMessages.value.delete(sessionId)
+    }
+    else {
+      accumulatedMessages.value.clear()
+    }
   }
 
   return {
