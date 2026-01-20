@@ -18,7 +18,7 @@ export type StreamEvent
 
 export interface StreamOptions {
   headers?: Record<string, string>
-  abortSignal?: AbortSignal // 🔴 新增：支持 AbortSignal
+  abortSignal?: AbortSignal
   onStreamEvent?: (event: StreamEvent) => void | Promise<void>
   toolsCompatibility?: Map<string, boolean>
   supportsTools?: boolean
@@ -45,7 +45,7 @@ function streamOptionsToolsCompatibilityOk(model: string, chatProvider: ChatProv
 
 async function streamFrom(model: string, chatProvider: ChatProvider, messages: Message[], options?: StreamOptions) {
   const headers = options?.headers
-  const abortSignal = options?.abortSignal // 🔴 获取 abort 信号
+  const abortSignal = options?.abortSignal
 
   const sanitized = sanitizeMessages(messages as unknown[])
   const resolveTools = async () => {
@@ -57,23 +57,23 @@ async function streamFrom(model: string, chatProvider: ChatProvider, messages: M
 
   const supportedTools = streamOptionsToolsCompatibilityOk(model, chatProvider, messages, options)
 
+  return new Promise<void>(async (resolve, reject) => {
+    try {
       await streamText({
         ...chatProvider.chat(model),
         maxSteps: 10,
         messages: sanitized,
         headers,
-        abortSignal, // 🔴 传递给 xsAI
-        // TODO: we need Automatic tools discovery
+        abortSignal,
         tools: supportedTools
           ? [
-              ...await mcp(),
-              ...await debug(),
-              ...await resolveTools(),
+              ...(await mcp()),
+              ...(await debug()),
+              ...(await resolveTools()),
             ]
           : undefined,
         async onEvent(event) {
           try {
-            // 🔴 检查是否已中止
             if (abortSignal?.aborted) {
               const abortError = new Error('Generation aborted')
               abortError.name = 'AbortError'
@@ -94,7 +94,6 @@ async function streamFrom(model: string, chatProvider: ChatProvider, messages: M
       })
     }
     catch (err) {
-      // 🔴 如果是 abort 错误，设置正确的错误名称
       if (abortSignal?.aborted) {
         const abortError = new Error('AbortError')
         abortError.name = 'AbortError'
@@ -104,27 +103,6 @@ async function streamFrom(model: string, chatProvider: ChatProvider, messages: M
         reject(err)
       }
     }
-  // TODO: we need Automatic tools discovery
-  const tools = supportedTools
-    ? [
-        ...await mcp(),
-        ...await debug(),
-        ...await resolveTools(),
-      ]
-    : undefined
-
-  streamText({
-    ...chatProvider.chat(model),
-    maxSteps: 10,
-    messages: sanitized,
-    headers,
-    tools,
-    onEvent: async (event) => {
-      await options?.onStreamEvent?.(event as StreamEvent)
-
-      if (event.type === 'error')
-        throw event.error ?? new Error('Stream error')
-    },
   })
 }
 
