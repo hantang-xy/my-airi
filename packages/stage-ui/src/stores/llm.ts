@@ -18,6 +18,7 @@ export type StreamEvent
 
 export interface StreamOptions {
   headers?: Record<string, string>
+  abortSignal?: AbortSignal // 🔴 新增：支持 AbortSignal
   onStreamEvent?: (event: StreamEvent) => void | Promise<void>
   toolsCompatibility?: Map<string, boolean>
   supportsTools?: boolean
@@ -44,6 +45,7 @@ function streamOptionsToolsCompatibilityOk(model: string, chatProvider: ChatProv
 
 async function streamFrom(model: string, chatProvider: ChatProvider, messages: Message[], options?: StreamOptions) {
   const headers = options?.headers
+  const abortSignal = options?.abortSignal // 🔴 获取 abort 信号
 
   const sanitized = sanitizeMessages(messages as unknown[])
   const resolveTools = async () => {
@@ -62,6 +64,7 @@ async function streamFrom(model: string, chatProvider: ChatProvider, messages: M
         maxSteps: 10,
         messages: sanitized,
         headers,
+        abortSignal, // 🔴 传递给 xsAI
         // TODO: we need Automatic tools discovery
         tools: supportedTools
           ? [
@@ -72,6 +75,14 @@ async function streamFrom(model: string, chatProvider: ChatProvider, messages: M
           : undefined,
         async onEvent(event) {
           try {
+            // 🔴 检查是否已中止
+            if (abortSignal?.aborted) {
+              const abortError = new Error('Generation aborted')
+              abortError.name = 'AbortError'
+              reject(abortError)
+              return
+            }
+
             await options?.onStreamEvent?.(event as StreamEvent)
             if (event.type === 'finish' && (event.finishReason !== 'tool_calls' || !options?.waitForTools))
               resolve()
@@ -85,7 +96,15 @@ async function streamFrom(model: string, chatProvider: ChatProvider, messages: M
       })
     }
     catch (err) {
-      reject(err)
+      // 🔴 如果是 abort 错误，设置正确的错误名称
+      if (abortSignal?.aborted) {
+        const abortError = new Error('AbortError')
+        abortError.name = 'AbortError'
+        reject(abortError)
+      }
+      else {
+        reject(err)
+      }
     }
   })
 }
