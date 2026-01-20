@@ -55,9 +55,7 @@ async function streamFrom(model: string, chatProvider: ChatProvider, messages: M
     return tools ?? []
   }
 
-  return new Promise<void>(async (resolve, reject) => {
-    try {
-      const supportedTools = streamOptionsToolsCompatibilityOk(model, chatProvider, messages, options)
+  const supportedTools = streamOptionsToolsCompatibilityOk(model, chatProvider, messages, options)
 
       await streamText({
         ...chatProvider.chat(model),
@@ -106,6 +104,27 @@ async function streamFrom(model: string, chatProvider: ChatProvider, messages: M
         reject(err)
       }
     }
+  // TODO: we need Automatic tools discovery
+  const tools = supportedTools
+    ? [
+        ...await mcp(),
+        ...await debug(),
+        ...await resolveTools(),
+      ]
+    : undefined
+
+  streamText({
+    ...chatProvider.chat(model),
+    maxSteps: 10,
+    messages: sanitized,
+    headers,
+    tools,
+    onEvent: async (event) => {
+      await options?.onStreamEvent?.(event as StreamEvent)
+
+      if (event.type === 'error')
+        throw event.error ?? new Error('Stream error')
+    },
   })
 }
 
